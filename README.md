@@ -87,6 +87,12 @@ bash run.sh all python3 src/main.py --config=coma --env-config=sc2 with env_args
 docker run --gpus all -v "$(pwd):/pymarl" -t pymarl:1.0 python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=15m save_model=True save_replay=True
 ```
 
+### Run via PyCharm/Virtual environment
+
+1. Add `SC2PATH` to your environment variables under `Edit Configurations` where the value is pointing to the directory you have installed SC2 binaries.
+2. Create virtual environment (conda etc)
+3. Add dependencies
+4. Run main.py with example parameters: `--config=qmix --env-config=sc2 with env_args.map_name=2s3z`
 ### Results
 All results will be stored in the `Results` folder under ``results/sacred``.
 
