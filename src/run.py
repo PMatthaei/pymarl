@@ -85,12 +85,13 @@ def run_sequential(args, logger):
     args.state_shape = env_info["state_shape"]
 
     # Default/Base scheme
+    reward_dict = {"vshape": (1,), "group": "agents", "dtype": th.float32} if args.env_args["reward_local"] else {"vshape": (1,)}
     scheme = {
         "state": {"vshape": env_info["state_shape"]},
         "obs": {"vshape": env_info["obs_shape"], "group": "agents"},
         "actions": {"vshape": (1,), "group": "agents", "dtype": th.long},
         "avail_actions": {"vshape": (env_info["n_actions"],), "group": "agents", "dtype": th.int},
-        "reward": {"vshape": (1,)},
+        "reward": reward_dict,
         "terminated": {"vshape": (1,), "dtype": th.uint8},
     }
     groups = {

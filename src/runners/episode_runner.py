@@ -66,12 +66,18 @@ class EpisodeRunner:
             # Receive the actions for each agent at this timestep in a batch of size 1
             actions = self.mac.select_actions(self.batch, t_ep=self.t, t_env=self.t_env, test_mode=test_mode)
 
-            reward, terminated, env_info = self.env.step(actions[0])
-            episode_return += reward
+            rewards, terminated, env_info = self.env.step(actions[0])
+            if self.env.reward_local:
+                # If local rewards sum up
+                episode_return += np.sum(rewards)
+            else:
+                # If global rewards take first since all are the same
+                assert np.unique(rewards).size == 1, "Global reward array inconsistent."
+                episode_return += rewards[0]
 
             post_transition_data = {
                 "actions": actions,
-                "reward": [(reward,)],
+                "reward": rewards if self.args.env_args["reward_local"] else [(rewards[0],)],
                 "terminated": [(terminated != env_info.get("episode_limit", False),)],
             }
 

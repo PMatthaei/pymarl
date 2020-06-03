@@ -83,7 +83,15 @@ class QLearner:
             target_max_qvals = self.target_mixer(target_max_qvals, batch["state"][:, 1:])
 
         # Calculate 1-step Q-Learning targets
-        targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
+        if self.args.env_args["reward_local"]:
+            # Merge last two dimension -> unpack list with n_agents local rewards
+            rewards = rewards.view(batch.batch_size, batch.max_seq_length-1, -1)
+            # Repeat terminated and targets_max_qvals to match local reward dimension
+            terminated = terminated.repeat(1,1, self.args.n_agents)
+            target_max_qvals = target_max_qvals.repeat(1,1, self.args.n_agents)
+            targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
+        else:
+            targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
 
         # Td-error
         td_error = (chosen_action_qvals - targets.detach())
