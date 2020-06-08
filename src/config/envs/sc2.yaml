@@ -22,6 +22,7 @@ env_args:
   reward_sparse: False
   reward_win: 200
   reward_local: True
+  reward_local_weighted: False
   replay_dir: ""
   replay_prefix: ""
   state_last_action: True

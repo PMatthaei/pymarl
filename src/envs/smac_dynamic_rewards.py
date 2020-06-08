@@ -30,6 +30,12 @@ actions = {
     "heal": 386,  # Unit
 }
 
+agent_reward_behaviour = {
+    "selfish": .0,
+    "selfless": 1.0,
+    "balanced": .5,
+}
+
 
 class SMACDynamicRewards(StarCraft2Env):
     def __init__(self, map_name="8m", step_mul=8, move_amount=2, difficulty="7", game_version=None, seed=None,
@@ -45,7 +51,7 @@ class SMACDynamicRewards(StarCraft2Env):
                  reward_scale=True,
                  reward_scale_rate=20,
                  reward_local=True,
-                 weighted_local_rewards=False,
+                 reward_local_weighted=False,
                  local_reward_weight=.5,
                  debug_rewards=False,
                  replay_dir="", replay_prefix="",
@@ -60,7 +66,7 @@ class SMACDynamicRewards(StarCraft2Env):
         self.debug_rewards = debug_rewards
 
         self.reward_local = reward_local
-        self.weighted_local_rewards = weighted_local_rewards
+        self.reward_local_weighted = reward_local_weighted
         self.local_reward_weights = [local_reward_weight] * self.n_agents
 
         self.local_attack_r_t = 0
@@ -87,8 +93,7 @@ class SMACDynamicRewards(StarCraft2Env):
             if not self.heuristic_ai:
                 sc_action, target_id = self.get_agent_action(a_id, action)
             else:
-                sc_action, action_num, target_id = self.get_agent_action_heuristic(
-                    a_id, action)
+                sc_action, action_num, target_id = self.get_agent_action_heuristic(a_id, action)
                 actions[a_id] = action_num
             if sc_action:
                 sc_actions.append(sc_action)
@@ -121,13 +126,13 @@ class SMACDynamicRewards(StarCraft2Env):
             # Calculate total attack reward based on targets attacked in step t
             self.local_attack_r_t = self.calculate_local_attack_reward(targets)
 
-            # Calculate for each agent is local reward
+            # Calculate for each agent its local reward
             for a_id, action in enumerate(actions_int):
                 target_id = targets[a_id]
                 local_reward = self.local_reward(a_id, target_id)
                 local_rewards.append(local_reward)
-
-            if self.weighted_local_rewards:
+            # Weight reward importance
+            if self.reward_local_weighted:
                 local_rewards = self.weight_local_rewards(local_rewards)
             # Calculate global reward to assert correctness later
             reward = self.global_reward()
@@ -225,12 +230,14 @@ class SMACDynamicRewards(StarCraft2Env):
         if self.reward_local:
             return local_rewards, terminated, info
 
-        return [reward]*self.n_agents, terminated, info
+        return [reward] * self.n_agents, terminated, info
 
     def weight_local_rewards(self, rs):
         ws = self.local_reward_weights
+        if self.debug:
+            logging.debug("Local reward weights = {}".format(self.local_reward_weights).center(60, '-'))
         rs_ws = list(zip(rs, ws))
-        r_mean_weighted = np.mean([(1.0 - w_i) * r_i for r_i, w_i in rs_ws])
+        r_mean_weighted = np.mean([(1.0 - w_j) * r_j for r_j, w_j in rs_ws])
         rs_weighted = [w_i * r_i + r_mean_weighted for r_i, w_i in rs_ws]
 
         diff = abs(np.sum(rs) - np.sum(rs_weighted))
