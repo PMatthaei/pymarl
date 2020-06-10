@@ -90,6 +90,7 @@ class EpisodeBatch:
             if k in self.data.transition_data:
                 target = self.data.transition_data
                 if mark_filled:
+                    # Fill the selected slices with 1 = marked
                     target["filled"][slices] = 1
                     mark_filled = False
                 _slices = slices
@@ -101,6 +102,11 @@ class EpisodeBatch:
 
             dtype = self.scheme[k].get("dtype", th.float32)
             v = th.tensor(v, dtype=dtype, device=self.device)
+            try:
+                idx = len(v.shape) - 1
+                v_idx = v.shape[idx]
+            except IndexError as err:
+                raise err
             self._check_safe_view(v, target[k][_slices])
             target[k][_slices] = v.view_as(target[k][_slices])
 
@@ -114,11 +120,15 @@ class EpisodeBatch:
     def _check_safe_view(self, v, dest):
         idx = len(v.shape) - 1
         for s in dest.shape[::-1]:
-            if v.shape[idx] != s:
-                if s != 1:
-                    raise ValueError("Unsafe reshape of {} to {}".format(v.shape, dest.shape))
-            else:
-                idx -= 1
+            try:
+                v_idx = v.shape[idx]
+                if v_idx != s:
+                    if s != 1:
+                        raise ValueError("Unsafe reshape of {} to {}".format(v.shape, dest.shape))
+                else:
+                    idx -= 1
+            except IndexError as err:
+                raise err
 
     def __getitem__(self, item):
         if isinstance(item, str):

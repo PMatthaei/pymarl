@@ -75,9 +75,10 @@ class EpisodeRunner:
                 assert np.unique(rewards).size == 1, "Global reward array inconsistent."
                 episode_return += rewards[0]
 
+            reward_data = rewards if self.env.reward_local else [(rewards[0],)]
             post_transition_data = {
                 "actions": actions,
-                "reward": rewards if self.args.env_args["reward_local"] else [(rewards[0],)],
+                "reward": reward_data,
                 "terminated": [(terminated != env_info.get("episode_limit", False),)],
             }
 

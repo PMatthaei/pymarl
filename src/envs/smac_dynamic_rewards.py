@@ -112,7 +112,7 @@ class SMACDynamicRewards(StarCraft2Env):
             self._obs = self._controller.observe()
         except (protocol.ProtocolError, protocol.ConnectionError):
             self.full_restart()
-            return 0, True, {}
+            return [0]*self.n_agents, True, {}
 
         self._total_steps += 1
         self._episode_steps += 1
@@ -155,18 +155,21 @@ class SMACDynamicRewards(StarCraft2Env):
                 self.win_counted = True
                 info["battle_won"] = True
                 if not self.reward_sparse:
-                    logging.debug("Reward win with".format(self.reward_win).center(60, '-'))
+                    if self.debug_rewards:
+                        logging.debug("Reward win with".format(self.reward_win).center(60, '-'))
                     reward += self.reward_win
                     if self.reward_local:
                         # Every agent receives win reward
                         local_reward_win = self.reward_win / self.n_agents
-                        logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
+                        if self.debug_rewards:
+                            logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
                         local_rewards = [x + local_reward_win for x in local_rewards]
                 else:
                     reward = 1
                     if self.reward_local:
                         local_reward_win = 1.0 / self.n_agents
-                        logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
+                        if self.debug_rewards:
+                            logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
                         local_rewards = [local_reward_win] * self.n_agents
 
             elif game_end_code == -1 and not self.defeat_counted:
@@ -217,7 +220,7 @@ class SMACDynamicRewards(StarCraft2Env):
             local_reward_sum = np.sum(local_rewards)
             diff = abs(reward - local_reward_sum)
             # TODO: rounding/precision error
-            assert diff < 1e-15, \
+            assert diff < 1e-10, \
                 "Global reward and local reward sum should be equal. Difference = {}".format(diff).center(60, '-')
 
             if self.debug_rewards:
@@ -228,9 +231,12 @@ class SMACDynamicRewards(StarCraft2Env):
             logging.debug("Global Reward = {}".format(reward).center(60, '-'))
 
         if self.reward_local:
+            assert isinstance(local_rewards, list)
             return local_rewards, terminated, info
 
-        return [reward] * self.n_agents, terminated, info
+        reward_filled = [reward] * self.n_agents
+        assert isinstance(reward_filled, list)
+        return reward_filled, terminated, info
 
     def weight_local_rewards(self, rs):
         ws = self.local_reward_weights
@@ -241,7 +247,7 @@ class SMACDynamicRewards(StarCraft2Env):
         rs_weighted = [w_i * r_i + r_mean_weighted for r_i, w_i in rs_ws]
 
         diff = abs(np.sum(rs) - np.sum(rs_weighted))
-        assert diff < 1e-15, "Weighted reward sum must (almost) be equal to local reward sum. Difference = {}".format(
+        assert diff < 1e-10, "Weighted reward sum must (almost) be equal to local reward sum. Difference = {}".format(
             diff)
 
         return rs_weighted
