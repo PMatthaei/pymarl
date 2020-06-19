@@ -7,6 +7,7 @@ import torch as th
 class BasicMAC:
     def __init__(self, scheme, groups, args):
         self.n_agents = args.n_agents
+        self.groups = groups
         self.args = args
         input_shape = self._get_input_shape(scheme)
         self._build_agents(input_shape)
@@ -30,7 +31,7 @@ class BasicMAC:
 
         # Softmax the agent outputs if they're policy logits
         if self.agent_output_type == "pi_logits":
-
+            reshaped_avail_actions = None
             if getattr(self.args, "mask_before_softmax", True):
                 # Make the logits for unavailable actions very negative to minimise their affect on the softmax
                 reshaped_avail_actions = avail_actions.reshape(ep_batch.batch_size * self.n_agents, -1)
@@ -50,6 +51,7 @@ class BasicMAC:
                 if getattr(self.args, "mask_before_softmax", True):
                     # Zero out the unavailable actions
                     agent_outs[reshaped_avail_actions == 0] = 0.0
+            assert reshaped_avail_actions is not None
 
         view = agent_outs.view(ep_batch.batch_size, self.n_agents, -1)
         return view
@@ -76,22 +78,28 @@ class BasicMAC:
         self.agent = agent_REGISTRY[self.args.agent](input_shape, self.args)
 
     def _build_inputs(self, batch, t):
+        # TODO: agents are not homogenous?
         # Assumes homogenous agents with flat observations.
         # Other MACs might want to e.g. delegate building inputs to each agent
         bs = batch.batch_size
-        inputs = []
-        inputs.append(batch["obs"][:, t])  # b1av
+        inputs = [batch["obs"][:, t]]
+        # Add last action to inputs if needed
         if self.args.obs_last_action:
+            # at t=0 is all zeros = no-op action
             if t == 0:
                 inputs.append(th.zeros_like(batch["actions_onehot"][:, t]))
+            # else add actions one-hot encoded from previous step (t-1) as last actions
             else:
                 inputs.append(batch["actions_onehot"][:, t-1])
+        # If actions should include agent id -> add row of identity matrix corresponding to agent
         if self.args.obs_agent_id:
             inputs.append(th.eye(self.n_agents, device=batch.device).unsqueeze(0).expand(bs, -1, -1))
 
+        # Reshape inputs
         inputs = th.cat([x.reshape(bs*self.n_agents, -1) for x in inputs], dim=1)
         return inputs
 
+    # Input shape defines input amount of agent network
     def _get_input_shape(self, scheme):
         input_shape = scheme["obs"]["vshape"]
         if self.args.obs_last_action:

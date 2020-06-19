@@ -28,6 +28,7 @@ class EpisodeBatch:
             self._setup_data(self.scheme, self.groups, batch_size, max_seq_length, self.preprocess)
 
     def _setup_data(self, scheme, groups, batch_size, max_seq_length, preprocess):
+        # Preprocess data before creating batch
         if preprocess is not None:
             for k in preprocess:
                 assert k in scheme
@@ -48,6 +49,7 @@ class EpisodeBatch:
                 if "episode_const" in self.scheme[k]:
                     self.scheme[new_k]["episode_const"] = self.scheme[k]["episode_const"]
 
+        # TODO: how is masking via filled realized? and why used?
         assert "filled" not in scheme, '"filled" is a reserved key for masking.'
         scheme.update({
             "filled": {"vshape": (1,), "dtype": th.long},
@@ -60,16 +62,19 @@ class EpisodeBatch:
             group = field_info.get("group", None)
             dtype = field_info.get("dtype", th.float32)
 
+            # Assert correct setup of scheme
             if isinstance(vshape, int):
                 vshape = (vshape,)
-
             if group:
                 assert group in groups, "Group {} must have its number of members defined in _groups_".format(group)
                 shape = (groups[group], *vshape)
             else:
                 shape = vshape
 
+            # TODO: what is const episode.
+            # max_seq_length is not anymore needed when all episodes are of same length
             if episode_const:
+                # TODO: why episode data and below transition data target?
                 self.data.episode_data[field_key] = th.zeros((batch_size, *shape), dtype=dtype, device=self.device)
             else:
                 self.data.transition_data[field_key] = th.zeros((batch_size, max_seq_length, *shape), dtype=dtype, device=self.device)
@@ -77,6 +82,7 @@ class EpisodeBatch:
     def extend(self, scheme, groups=None):
         self._setup_data(scheme, self.groups if groups is None else groups, self.batch_size, self.max_seq_length)
 
+    # Map to different device if previous check resulted in device difference
     def to(self, device):
         for k, v in self.data.transition_data.items():
             self.data.transition_data[k] = v.to(device)
@@ -84,6 +90,7 @@ class EpisodeBatch:
             self.data.episode_data[k] = v.to(device)
         self.device = device
 
+    # Update batch with new data
     def update(self, data, bs=slice(None), ts=slice(None), mark_filled=True):
         slices = self._parse_slices((bs, ts))
         for k, v in data.items():
@@ -214,6 +221,7 @@ class EpisodeBatch:
                                                                                      self.groups.keys())
 
 
+# Replay buffer is an episode batch -> since a replay buffer holds past transition data
 class ReplayBuffer(EpisodeBatch):
     def __init__(self, scheme, groups, buffer_size, max_seq_length, preprocess=None, device="cpu"):
         super(ReplayBuffer, self).__init__(scheme, groups, buffer_size, max_seq_length, preprocess=preprocess, device=device)
@@ -239,15 +247,18 @@ class ReplayBuffer(EpisodeBatch):
             self.insert_episode_batch(ep_batch[buffer_left:, :])
 
     def can_sample(self, batch_size):
+        # Allow sampling if enough episodes are in buffer -> more/equal than batch size sampled later on
         return self.episodes_in_buffer >= batch_size
 
     def sample(self, batch_size):
         assert self.can_sample(batch_size)
+        # Return all current episodes if batch size just reached
         if self.episodes_in_buffer == batch_size:
             return self[:batch_size]
         else:
-            # Uniform sampling only atm
+            # If more samples than batch size -> sample uniformly -> generate random ids
             ep_ids = np.random.choice(self.episodes_in_buffer, batch_size, replace=False)
+            # TODO what is this operation?!?!
             return self[ep_ids]
 
     def __repr__(self):

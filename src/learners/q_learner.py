@@ -40,9 +40,11 @@ class QLearner:
         rewards = batch["reward"][:, :-1]
         actions = batch["actions"][:, :-1]
         terminated = batch["terminated"][:, :-1].float()
+        avail_actions = batch["avail_actions"]
+
+        # TODO: what does this mask do?
         mask = batch["filled"][:, :-1].float()
         mask[:, 1:] = mask[:, 1:] * (1 - terminated[:, :-1])
-        avail_actions = batch["avail_actions"]
 
         # Calculate estimated Q-Values
         mac_out = []
@@ -81,9 +83,11 @@ class QLearner:
         unmixed_target_max_qvals = None
         # Mix
         if self.mixer is not None:
+
             if self.reward_local:
                 # Save unmixed target qvals per agent to calculate new target per agent
                 unmixed_target_max_qvals = target_max_qvals
+
             chosen_action_qvals = self.mixer(chosen_action_qvals, batch["state"][:, :-1])
             target_max_qvals = self.target_mixer(target_max_qvals, batch["state"][:, 1:])
 
@@ -93,7 +97,7 @@ class QLearner:
             rewards = rewards.view(batch.batch_size, batch.max_seq_length - 1, -1)
             # Repeat terminated env data to match dimension (1 = terminated)
             terminated = terminated.repeat(1, 1, self.args.n_agents)
-            #QN Cost
+            # Q-Network cost function
             targets = rewards + self.args.gamma * (1 - terminated) * unmixed_target_max_qvals
         else:
             targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
@@ -115,10 +119,12 @@ class QLearner:
         grad_norm = th.nn.utils.clip_grad_norm_(self.params, self.args.grad_norm_clip)
         self.optimiser.step()
 
+        # Update target interval
         if (episode_num - self.last_target_update_episode) / self.args.target_update_interval >= 1.0:
             self._update_targets()
             self.last_target_update_episode = episode_num
 
+        # Log stats interval
         if t_env - self.log_stats_t >= self.args.learner_log_interval:
             self.logger.log_stat("loss", loss.item(), t_env)
             self.logger.log_stat("grad_norm", grad_norm, t_env)

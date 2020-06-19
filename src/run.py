@@ -73,18 +73,19 @@ def evaluate_sequential(args, runner):
 
     runner.close_env()
 
+
 def run_sequential(args, logger):
 
     # Init runner so we can get env info
     runner = r_REGISTRY[args.runner](args=args, logger=logger)
 
-    # Set up schemes and groups here
+    # Setup schemes and groups here
     env_info = runner.get_env_info()
     args.n_agents = env_info["n_agents"]
     args.n_actions = env_info["n_actions"]
     args.state_shape = env_info["state_shape"]
 
-    # Default/Base scheme
+    # Default/base scheme
     reward_dict = {"vshape": (1,), "group": "agents", "dtype": th.float32} if args.env_args["reward_local"] else {"vshape": (1,)}
     scheme = {
         "state": {"vshape": env_info["state_shape"]},
@@ -94,36 +95,43 @@ def run_sequential(args, logger):
         "reward": reward_dict,
         "terminated": {"vshape": (1,), "dtype": th.uint8},
     }
+    # TODO: what is groups controlling?
     groups = {
         "agents": args.n_agents
     }
+    # TODO: how are preprocessings applied?
     preprocess = {
         "actions": ("actions_onehot", [OneHot(out_dim=args.n_actions)])
     }
 
+    # TODO: why create replaybuffer with episode limit + 1?
+    # Setup replaybuffer
     buffer = ReplayBuffer(scheme, groups, args.buffer_size, env_info["episode_limit"] + 1,
                           preprocess=preprocess,
                           device="cpu" if args.buffer_cpu_only else args.device)
 
-    # Setup multiagent controller here
+    # Setup multi-agent controller here
     mac = mac_REGISTRY[args.mac](buffer.scheme, groups, args)
 
-    # Give runner the scheme
+    # Setup runner with created scheme
     runner.setup(scheme=scheme, groups=groups, preprocess=preprocess, mac=mac)
 
-    # Learner
+    # Setup learner
     learner = le_REGISTRY[args.learner](mac, buffer.scheme, logger, args)
 
+    # Activate CUDA
     if args.use_cuda:
         learner.cuda()
 
+    # Load checkpoint if necessary
     if args.checkpoint_path != "":
 
         timesteps = []
         timestep_to_load = 0
 
+        # Check checkpoint path integrity -> exist or else no model can be loaded later
         if not os.path.isdir(args.checkpoint_path):
-            logger.console_logger.info("Checkpoint directiory {} doesn't exist".format(args.checkpoint_path))
+            logger.console_logger.info("Checkpoint directory {} doesn't exist".format(args.checkpoint_path))
             return
 
         # Go through all files in args.checkpoint_path
@@ -143,6 +151,7 @@ def run_sequential(args, logger):
         model_path = os.path.join(args.checkpoint_path, str(timestep_to_load))
 
         logger.console_logger.info("Loading model from {}".format(model_path))
+        # TODO: enforce learner loading correct model?
         learner.load_models(model_path)
         runner.t_env = timestep_to_load
 
@@ -150,7 +159,9 @@ def run_sequential(args, logger):
             evaluate_sequential(args, runner)
             return
 
-    # start training
+    #
+    # Start training
+    #
     episode = 0
     last_test_T = -args.test_interval - 1
     last_log_T = 0
@@ -163,20 +174,25 @@ def run_sequential(args, logger):
 
     while runner.t_env <= args.t_max:
 
-        # Run for a whole episode at a time
+        # Run for a whole episode at a time -> runner returns a episode batch
         episode_batch = runner.run(test_mode=False)
+        # Save episode in replay buffer
         buffer.insert_episode_batch(episode_batch)
 
+        # If enough episodes saved -> sample
         if buffer.can_sample(args.batch_size):
             episode_sample = buffer.sample(args.batch_size)
 
             # Truncate batch to only filled timesteps
+            # TODO: explain max_t_filled
             max_ep_t = episode_sample.max_t_filled()
             episode_sample = episode_sample[:, :max_ep_t]
 
+            # TODO: when is device differing?!
             if episode_sample.device != args.device:
                 episode_sample.to(args.device)
 
+            # Train on sampled episodes
             learner.train(episode_sample, runner.t_env, episode)
 
         # Execute test runs once in a while
@@ -192,10 +208,10 @@ def run_sequential(args, logger):
             for _ in range(n_test_runs):
                 runner.run(test_mode=True)
 
+        # Save model after certain time
         if args.save_model and (runner.t_env - model_save_time >= args.save_model_interval or model_save_time == 0):
             model_save_time = runner.t_env
             save_path = os.path.join(args.local_results_path, "models", args.unique_token, str(runner.t_env))
-            #"results/models/{}".format(unique_token)
             os.makedirs(save_path, exist_ok=True)
             logger.console_logger.info("Saving models to {}".format(save_path))
 
@@ -203,8 +219,11 @@ def run_sequential(args, logger):
             # use appropriate filenames to do critics, optimizer states
             learner.save_models(save_path)
 
+        # Increase total episode counter by batch size of episodes currently run
+        # TODO: follow batch_size_run!
         episode += args.batch_size_run
 
+        # Log stats in interval
         if (runner.t_env - last_log_T) >= args.log_interval:
             logger.log_stat("episode", episode, runner.t_env)
             logger.print_recent_stats()
