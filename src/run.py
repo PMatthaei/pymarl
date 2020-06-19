@@ -99,7 +99,7 @@ def run_sequential(args, logger):
     groups = {
         "agents": args.n_agents
     }
-    # TODO: how are preprocessings applied?
+    # TODO: where/how is pre processing applied?
     preprocess = {
         "actions": ("actions_onehot", [OneHot(out_dim=args.n_actions)])
     }
