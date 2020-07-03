@@ -92,7 +92,9 @@ class QLearner:
             rewards = rewards.view(batch.batch_size, batch.max_seq_length - 1, -1)
             # Repeat terminated env data to match dimension (1 = terminated)
             terminated = terminated.repeat(1, 1, self.args.n_agents)
-            target_max_qvals = target_max_qvals.repeat(1, 1, self.args.n_agents)
+            # Repeat mixed value to for every agent if no mixing we already have individual qval
+            if self.mixer is not None:
+                target_max_qvals = target_max_qvals.repeat(1, 1, self.args.n_agents)
             # Q-Network cost function
             targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
         else:
