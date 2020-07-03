@@ -81,15 +81,8 @@ class QLearner:
         else:
             target_max_qvals = target_mac_out.max(dim=3)[0]
 
-        unmixed_target_max_qvals = None
-
         # Apply mixer
         if self.mixer is not None:
-
-            if self.reward_local:
-                # Save unmixed target qvals per agent to calculate new target per agent later
-                unmixed_target_max_qvals = target_max_qvals
-
             chosen_action_qvals = self.mixer(chosen_action_qvals, batch["state"][:, :-1])
             target_max_qvals = self.target_mixer(target_max_qvals, batch["state"][:, 1:])
 
