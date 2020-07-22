@@ -33,15 +33,19 @@ class QLearner:
         self.target_mac = copy.deepcopy(mac)
 
         self.log_stats_t = -self.args.learner_log_interval - 1
+        self.reward_local = self.args.env_args["reward_local"]
 
     def train(self, batch: EpisodeBatch, t_env: int, episode_num: int):
         # Get the relevant quantities
         rewards = batch["reward"][:, :-1]
         actions = batch["actions"][:, :-1]
         terminated = batch["terminated"][:, :-1].float()
-        mask = batch["filled"][:, :-1].float()
-        mask[:, 1:] = mask[:, 1:] * (1 - terminated[:, :-1])
         avail_actions = batch["avail_actions"]
+
+        # TODO: what does this mask do?
+        mask = batch["filled"][:, :-1].float()
+        # terminate yields 1 or 0 which indicate if the env terminated -> if so mask out via  0
+        mask[:, 1:] = mask[:, 1:] * (1 - terminated[:, :-1])
 
         # Calculate estimated Q-Values
         mac_out = []
@@ -64,7 +68,7 @@ class QLearner:
         # We don't need the first timesteps Q-Value estimate for calculating targets
         target_mac_out = th.stack(target_mac_out[1:], dim=1)  # Concat across time
 
-        # Mask out unavailable actions
+        # Mask out unavailable actions -> Infinitely low Q value -> not suitable for policy
         target_mac_out[avail_actions[:, 1:] == 0] = -9999999
 
         # Max over target Q-Values
@@ -77,13 +81,24 @@ class QLearner:
         else:
             target_max_qvals = target_mac_out.max(dim=3)[0]
 
-        # Mix
+        # Apply mixer
         if self.mixer is not None:
             chosen_action_qvals = self.mixer(chosen_action_qvals, batch["state"][:, :-1])
             target_max_qvals = self.target_mixer(target_max_qvals, batch["state"][:, 1:])
 
         # Calculate 1-step Q-Learning targets
-        targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
+        if self.reward_local:
+            # Merge last two dimension -> unpack list with n_agents local rewards
+            rewards = rewards.view(batch.batch_size, batch.max_seq_length - 1, -1)
+            # Repeat terminated env data to match dimension (1 = terminated)
+            terminated = terminated.repeat(1, 1, self.args.n_agents)
+            # Repeat mixed value to for every agent if no mixing we already have individual qval
+            if self.mixer is not None:
+                target_max_qvals = target_max_qvals.repeat(1, 1, self.args.n_agents)
+            # Q-Network cost function
+            targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
+        else:
+            targets = rewards + self.args.gamma * (1 - terminated) * target_max_qvals
 
         # Td-error
         td_error = (chosen_action_qvals - targets.detach())
@@ -102,17 +117,21 @@ class QLearner:
         grad_norm = th.nn.utils.clip_grad_norm_(self.params, self.args.grad_norm_clip)
         self.optimiser.step()
 
+        # Update target interval
         if (episode_num - self.last_target_update_episode) / self.args.target_update_interval >= 1.0:
             self._update_targets()
             self.last_target_update_episode = episode_num
 
+        # Log stats interval
         if t_env - self.log_stats_t >= self.args.learner_log_interval:
             self.logger.log_stat("loss", loss.item(), t_env)
             self.logger.log_stat("grad_norm", grad_norm, t_env)
-            mask_elems = mask.sum().item()
-            self.logger.log_stat("td_error_abs", (masked_td_error.abs().sum().item()/mask_elems), t_env)
-            self.logger.log_stat("q_taken_mean", (chosen_action_qvals * mask).sum().item()/(mask_elems * self.args.n_agents), t_env)
-            self.logger.log_stat("target_mean", (targets * mask).sum().item()/(mask_elems * self.args.n_agents), t_env)
+            mask_elements = mask.sum().item()
+            self.logger.log_stat("td_error_abs", (masked_td_error.abs().sum().item() / mask_elements), t_env)
+            self.logger.log_stat("q_taken_mean",
+                                 (chosen_action_qvals * mask).sum().item() / (mask_elements * self.args.n_agents), t_env)
+            self.logger.log_stat("target_mean", (targets * mask).sum().item() / (mask_elements * self.args.n_agents),
+                                 t_env)
             self.log_stats_t = t_env
 
     def _update_targets(self):

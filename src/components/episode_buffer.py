@@ -22,32 +22,18 @@ class EpisodeBatch:
         if data is not None:
             self.data = data
         else:
+            # Init namespace which holds episode batch
             self.data = SN()
             self.data.transition_data = {}
             self.data.episode_data = {}
-            self._setup_data(self.scheme, self.groups, batch_size, max_seq_length, self.preprocess)
+            self._setup_data(self.scheme, self.groups, self.batch_size, self.max_seq_length, self.preprocess)
 
     def _setup_data(self, scheme, groups, batch_size, max_seq_length, preprocess):
+        # Preprocess data before creating batch
         if preprocess is not None:
-            for k in preprocess:
-                assert k in scheme
-                new_k = preprocess[k][0]
-                transforms = preprocess[k][1]
+            self.preprocess_data(preprocess, scheme)
 
-                vshape = self.scheme[k]["vshape"]
-                dtype = self.scheme[k]["dtype"]
-                for transform in transforms:
-                    vshape, dtype = transform.infer_output_info(vshape, dtype)
-
-                self.scheme[new_k] = {
-                    "vshape": vshape,
-                    "dtype": dtype
-                }
-                if "group" in self.scheme[k]:
-                    self.scheme[new_k]["group"] = self.scheme[k]["group"]
-                if "episode_const" in self.scheme[k]:
-                    self.scheme[new_k]["episode_const"] = self.scheme[k]["episode_const"]
-
+        # TODO: how is masking via filled realized? and why used?
         assert "filled" not in scheme, '"filled" is a reserved key for masking.'
         scheme.update({
             "filled": {"vshape": (1,), "dtype": th.long},
@@ -55,28 +41,56 @@ class EpisodeBatch:
 
         for field_key, field_info in scheme.items():
             assert "vshape" in field_info, "Scheme must define vshape for {}".format(field_key)
+            # Get configuration of current scheme item
             vshape = field_info["vshape"]
             episode_const = field_info.get("episode_const", False)
             group = field_info.get("group", None)
             dtype = field_info.get("dtype", th.float32)
 
+            # Assert correct setup of configuration
             if isinstance(vshape, int):
                 vshape = (vshape,)
-
             if group:
                 assert group in groups, "Group {} must have its number of members defined in _groups_".format(group)
                 shape = (groups[group], *vshape)
             else:
                 shape = vshape
 
+            # TODO: Verify episode_const is declaring all episodes are of same length.
+            # max_seq_length is not anymore needed when all episodes are of same length
             if episode_const:
+                # If constant episodes -> use episode instead of transition data
                 self.data.episode_data[field_key] = th.zeros((batch_size, *shape), dtype=dtype, device=self.device)
             else:
-                self.data.transition_data[field_key] = th.zeros((batch_size, max_seq_length, *shape), dtype=dtype, device=self.device)
+                self.data.transition_data[field_key] = th.zeros((batch_size, max_seq_length, *shape), dtype=dtype,
+                                                                device=self.device)
+
+    def preprocess_data(self, preprocess, scheme):
+        # Pre-processing definition see: run.py
+        for k in preprocess:
+            assert k in scheme
+            new_k = preprocess[k][0]
+            # Transforms see: transforms.py
+            transforms = preprocess[k][1]
+
+            vshape = self.scheme[k]["vshape"]
+            dtype = self.scheme[k]["dtype"]
+            for transform in transforms:
+                vshape, dtype = transform.infer_output_info(vshape, dtype)
+
+            self.scheme[new_k] = {
+                "vshape": vshape,
+                "dtype": dtype
+            }
+            if "group" in self.scheme[k]:
+                self.scheme[new_k]["group"] = self.scheme[k]["group"]
+            if "episode_const" in self.scheme[k]:
+                self.scheme[new_k]["episode_const"] = self.scheme[k]["episode_const"]
 
     def extend(self, scheme, groups=None):
         self._setup_data(scheme, self.groups if groups is None else groups, self.batch_size, self.max_seq_length)
 
+    # Map data to different device if previous check resulted in device difference
     def to(self, device):
         for k, v in self.data.transition_data.items():
             self.data.transition_data[k] = v.to(device)
@@ -84,13 +98,16 @@ class EpisodeBatch:
             self.data.episode_data[k] = v.to(device)
         self.device = device
 
+    # Update batch with new data
     def update(self, data, bs=slice(None), ts=slice(None), mark_filled=True):
         slices = self._parse_slices((bs, ts))
         for k, v in data.items():
             if k in self.data.transition_data:
                 target = self.data.transition_data
                 if mark_filled:
+                    # Fill the selected slices with 1 (= filled)
                     target["filled"][slices] = 1
+                    # once per function call if mark_filled argument not passed as False
                     mark_filled = False
                 _slices = slices
             elif k in self.data.episode_data:
@@ -101,6 +118,11 @@ class EpisodeBatch:
 
             dtype = self.scheme[k].get("dtype", th.float32)
             v = th.tensor(v, dtype=dtype, device=self.device)
+            try:
+                idx = len(v.shape) - 1
+                v_idx = v.shape[idx]
+            except IndexError as err:
+                raise err
             self._check_safe_view(v, target[k][_slices])
             target[k][_slices] = v.view_as(target[k][_slices])
 
@@ -114,11 +136,15 @@ class EpisodeBatch:
     def _check_safe_view(self, v, dest):
         idx = len(v.shape) - 1
         for s in dest.shape[::-1]:
-            if v.shape[idx] != s:
-                if s != 1:
-                    raise ValueError("Unsafe reshape of {} to {}".format(v.shape, dest.shape))
-            else:
-                idx -= 1
+            try:
+                v_idx = v.shape[idx]
+                if v_idx != s:
+                    if s != 1:
+                        raise ValueError("Unsafe reshape of {} to {}".format(v.shape, dest.shape))
+                else:
+                    idx -= 1
+            except IndexError as err:
+                raise err
 
     def __getitem__(self, item):
         if isinstance(item, str):
@@ -142,7 +168,8 @@ class EpisodeBatch:
             new_scheme = {key: self.scheme[key] for key in item}
             new_groups = {self.scheme[key]["group"]: self.groups[self.scheme[key]["group"]]
                           for key in item if "group" in self.scheme[key]}
-            ret = EpisodeBatch(new_scheme, new_groups, self.batch_size, self.max_seq_length, data=new_data, device=self.device)
+            ret = EpisodeBatch(new_scheme, new_groups, self.batch_size, self.max_seq_length, data=new_data,
+                               device=self.device)
             return ret
         else:
             item = self._parse_slices(item)
@@ -163,7 +190,7 @@ class EpisodeBatch:
             return len(indexing_item)
         elif isinstance(indexing_item, slice):
             _range = indexing_item.indices(max_size)
-            return 1 + (_range[1] - _range[0] - 1)//_range[2]
+            return 1 + (_range[1] - _range[0] - 1) // _range[2]
 
     def _new_data_sn(self):
         new_data = SN()
@@ -175,9 +202,9 @@ class EpisodeBatch:
         parsed = []
         # Only batch slice given, add full time slice
         if (isinstance(items, slice)  # slice a:b
-            or isinstance(items, int)  # int i
-            or (isinstance(items, (list, np.ndarray, th.LongTensor, th.cuda.LongTensor)))  # [a,b,c]
-            ):
+                or isinstance(items, int)  # int i
+                or (isinstance(items, (list, np.ndarray, th.LongTensor, th.cuda.LongTensor)))  # [a,b,c]
+        ):
             items = (items, slice(None))
 
         # Need the time indexing to be contiguous
@@ -185,10 +212,10 @@ class EpisodeBatch:
             raise IndexError("Indexing across Time must be contiguous")
 
         for item in items:
-            #TODO: stronger checks to ensure only supported options get through
+            # TODO: stronger checks to ensure only supported options get through
             if isinstance(item, int):
                 # Convert single indices to slices
-                parsed.append(slice(item, item+1))
+                parsed.append(slice(item, item + 1))
             else:
                 # Leave slices and lists as is
                 parsed.append(item)
@@ -204,9 +231,11 @@ class EpisodeBatch:
                                                                                      self.groups.keys())
 
 
+# Replay buffer is an episode batch -> since a replay buffer holds past transition data
 class ReplayBuffer(EpisodeBatch):
     def __init__(self, scheme, groups, buffer_size, max_seq_length, preprocess=None, device="cpu"):
-        super(ReplayBuffer, self).__init__(scheme, groups, buffer_size, max_seq_length, preprocess=preprocess, device=device)
+        super(ReplayBuffer, self).__init__(scheme, groups, buffer_size, max_seq_length, preprocess=preprocess,
+                                           device=device)
         self.buffer_size = buffer_size  # same as self.batch_size but more explicit
         self.buffer_index = 0
         self.episodes_in_buffer = 0
@@ -229,14 +258,17 @@ class ReplayBuffer(EpisodeBatch):
             self.insert_episode_batch(ep_batch[buffer_left:, :])
 
     def can_sample(self, batch_size):
+        # Allow sampling if enough episodes are in buffer -> more/equal than batch size sampled later on
         return self.episodes_in_buffer >= batch_size
 
     def sample(self, batch_size):
         assert self.can_sample(batch_size)
+        # Return all current episodes if batch size just reached
+        # Hint: self[<index>] is implemented via __getitem__ in EpisodeBatch
         if self.episodes_in_buffer == batch_size:
             return self[:batch_size]
         else:
-            # Uniform sampling only atm
+            # If more samples than batch size -> sample uniformly -> generate random ids
             ep_ids = np.random.choice(self.episodes_in_buffer, batch_size, replace=False)
             return self[ep_ids]
 
@@ -245,4 +277,3 @@ class ReplayBuffer(EpisodeBatch):
                                                                         self.buffer_size,
                                                                         self.scheme.keys(),
                                                                         self.groups.keys())
-
