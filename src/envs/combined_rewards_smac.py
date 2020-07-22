@@ -2,25 +2,15 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from smac.env.multiagentenv import MultiAgentEnv
-from smac.env.starcraft2.maps import get_map_params
-
-import atexit
-from operator import attrgetter
-from copy import deepcopy
 import numpy as np
-import enum
 import math
 from absl import logging
 
-from pysc2 import maps
-from pysc2 import run_configs
 from pysc2.lib import protocol
 
 from s2clientprotocol import common_pb2 as sc_common
 from s2clientprotocol import sc2api_pb2 as sc_pb
 from s2clientprotocol import raw_pb2 as r_pb
-from s2clientprotocol import debug_pb2 as d_pb
 from smac.env import StarCraft2Env
 
 actions = {
@@ -37,7 +27,7 @@ agent_reward_behaviour = {
 }
 
 
-class SMACDynamicRewards(StarCraft2Env):
+class CombinedRewardsSMAC(StarCraft2Env):
     def __init__(self, map_name="8m", step_mul=8, move_amount=2, difficulty="7", game_version=None, seed=None,
                  continuing_episode=False, obs_all_health=True, obs_own_health=True, obs_last_action=False,
                  obs_pathing_grid=False, obs_terrain_height=False, obs_instead_of_state=False,
@@ -51,22 +41,39 @@ class SMACDynamicRewards(StarCraft2Env):
                  reward_scale=True,
                  reward_scale_rate=20,
                  reward_local=True,
-                 reward_local_weighted=False,
+                 reward_local_weighted=True,
                  local_reward_weight=.5,
                  debug_rewards=False,
                  replay_dir="", replay_prefix="",
                  window_size_x=1920, window_size_y=1200, heuristic_ai=False, heuristic_rest=False, debug=False):
+        """
+                Create a modified SMAC environment which supports global, local and combined rewards
 
+                Parameters (only recently introduced parameters. For a list of previous parameters see original SMAC)
+                ----------
+                debug_rewards : bool, optional
+                    Debug reward process for each agent in each step.
+
+                reward_local : bool, optional
+                    Activate local reward calculation
+
+                reward_local_weighted : bool, optional
+                    Activate combined local rewards. The weighting is set via local_reward_weight.
+
+                local_reward_weight : float, optional
+                    The combination/weighting factor to combine local and global reward signals.
+                """
         super().__init__(map_name, step_mul, move_amount, difficulty, game_version, seed, continuing_episode,
                          obs_all_health, obs_own_health, obs_last_action, obs_pathing_grid, obs_terrain_height,
                          obs_instead_of_state, obs_timestep_number, state_last_action, state_timestep_number,
                          reward_sparse, reward_only_positive, reward_death_value, reward_win, reward_defeat,
                          reward_negative_scale, reward_scale, reward_scale_rate, replay_dir, replay_prefix,
                          window_size_x, window_size_y, heuristic_ai, heuristic_rest, debug)
-        self.debug_rewards = debug_rewards
 
+        self.debug_rewards = debug_rewards
         self.reward_local = reward_local
         self.reward_local_weighted = reward_local_weighted
+        # Every agent receives same combination weight
         self.local_reward_weights = [local_reward_weight] * self.n_agents
 
         self.local_attack_r_t = 0
@@ -86,6 +93,7 @@ class SMACDynamicRewards(StarCraft2Env):
         if self.debug:
             logging.debug("Actions".center(60, "-"))
 
+        # Collect attacked units aka targets in this step
         targets = []
 
         # Let AI/Agent decide on a action
@@ -112,7 +120,7 @@ class SMACDynamicRewards(StarCraft2Env):
             self._obs = self._controller.observe()
         except (protocol.ProtocolError, protocol.ConnectionError):
             self.full_restart()
-            return [0]*self.n_agents, True, {}
+            return [0] * self.n_agents, True, {}
 
         self._total_steps += 1
         self._episode_steps += 1
@@ -123,7 +131,7 @@ class SMACDynamicRewards(StarCraft2Env):
         local_rewards = []
         reward = 0
         if self.reward_local:
-            # Calculate total attack reward based on targets attacked in step t
+            # Calculate total attack reward based on targets attacked in step t - before rewarding !
             self.local_attack_r_t = self.calculate_local_attack_reward(targets)
 
             # Calculate for each agent its local reward
@@ -131,15 +139,17 @@ class SMACDynamicRewards(StarCraft2Env):
                 target_id = targets[a_id]
                 local_reward = self.local_reward(a_id, target_id)
                 local_rewards.append(local_reward)
+
             # Weight reward importance
             if self.reward_local_weighted:
-                local_rewards = self.weight_local_rewards(local_rewards)
+                local_rewards = self.combine_local_rewards(local_rewards)
+
             # Calculate global reward to assert correctness later
             reward = self.global_reward()
         else:
             reward = self.global_reward()
 
-        # After(!) rewarding everything unit related mark dead units for next steps
+        # After(!) rewarding every unit -> mark dead units for next steps
         self.mark_dead_units()
 
         terminated = False
@@ -215,13 +225,14 @@ class SMACDynamicRewards(StarCraft2Env):
             if self.reward_local:
                 local_rewards = [r / (self.max_reward / self.reward_scale_rate) for r in local_rewards]
 
-        # Assert correctness of local reward function to match global reward
+        # Assert correctness of local reward function -> local reward sum == global reward
         if self.reward_local:
             local_reward_sum = np.sum(local_rewards)
             diff = abs(reward - local_reward_sum)
-            # TODO: rounding/precision error
-            assert diff < 1e-10, \
-                "Global reward and local reward sum should be equal. Difference = {}".format(diff).center(60, '-')
+
+            np.testing.assert_almost_equal(reward, local_reward_sum, decimal=10,
+                                           err_msg="Global reward and local reward sum should be equal. Difference = {}"
+                                           .format(diff).center(60, '-'))
 
             if self.debug_rewards:
                 logging.debug("Difference global vs. local = {}".format(diff).center(60, '-'))
@@ -231,30 +242,40 @@ class SMACDynamicRewards(StarCraft2Env):
             logging.debug("Global Reward = {}".format(reward).center(60, '-'))
 
         if self.reward_local:
-            assert isinstance(local_rewards, list)
+            assert isinstance(local_rewards, list)  # Ensure reward is a list
             return local_rewards, terminated, info
 
-        reward_filled = [reward] * self.n_agents
-        assert isinstance(reward_filled, list)
+        reward_filled = [reward] * self.n_agents  # Serve global reward to all agents
+        assert isinstance(reward_filled, list)  # Ensure reward is a list
         return reward_filled, terminated, info
 
-    def weight_local_rewards(self, rs):
+    def combine_local_rewards(self, rs):
         ws = self.local_reward_weights
         if self.debug:
             logging.debug("Local reward weights = {}".format(self.local_reward_weights).center(60, '-'))
-        rs_ws = list(zip(rs, ws))
+        rs_ws = list(zip(rs, ws))  # Pair local rewards with their weight
         r_mean_weighted = np.mean([(1.0 - w_j) * r_j for r_j, w_j in rs_ws])
         rs_weighted = [w_i * r_i + r_mean_weighted for r_i, w_i in rs_ws]
 
-        diff = abs(np.sum(rs) - np.sum(rs_weighted))
-        assert diff < 1e-10, "Weighted reward sum must (almost) be equal to local reward sum. Difference = {}".format(
-            diff)
-
+        rs_sum = np.sum(rs)
+        rsw_sum = np.sum(rs_weighted)
+        diff = abs(rs_sum - rsw_sum)
+        # Ensure weighting/combining returns almost same global reward
+        np.testing.assert_almost_equal(rs_sum, rsw_sum, decimal=10,
+                                       err_msg="Weighted reward sum must (almost) be equal to local reward sum. Difference = {}"
+                                       .format(diff))
         return rs_weighted
 
     def local_reward(self, a_id, target_id):
         """
-        Reward function which returns the local reward of a single agent with a given id
+        Reward function which returns the local reward of a single agent with a given id.
+
+        The agent receives the following positive rewards:
+            - his health delta compared to previous step -> healing or shield regeneration
+            - local attack reward (see: calculate_local_attack_reward() )
+        The agent receives the following negative rewards:
+            - his health delta compared to previous step -> received damage
+            - death penalty
         """
         if self.reward_sparse:
             return 0
@@ -581,10 +602,14 @@ class SMACDynamicRewards(StarCraft2Env):
                 self.death_tracker_enemy[e_id] = 1
 
     def calculate_local_attack_reward(self, a_id_targets):
+        # Retrieve total dmg dealt by the team of agent
         total_attack_reward = self.get_total_attack_dmg()
         # Calculate amount of attacking agents
         attackers = sum(x is not None for x in a_id_targets)
-        # Calculate how much reward each attacking agent receives in this step
+        # Each attacking agent receives an equal portion of the total dealt damage
+        # Since SC2 is deterministic in its damage calculation
+        # we can assume the same dealt damage by same units for each step -> split reward evenly
+        # This may not be applicable to heterogeneous unit groups
         return total_attack_reward / (1.0 if (attackers == 0) else float(attackers))
 
     def get_total_attack_dmg(self):
@@ -597,17 +622,21 @@ class SMACDynamicRewards(StarCraft2Env):
                         logging.debug("Enemy with id {} died.".format(e_id).center(60, '-'))
                     # Reward kill for a_id
                     total_attack_reward += self.reward_death_value
-
+                    # Reward the damage which led to the death
                     total_attack_reward += prev_health
 
                     if self.debug_rewards:
                         logging.debug("Reward enemy death = {}".format(self.reward_death_value).center(60, '-'))
                         logging.debug("Reward enemy damage = {}".format(prev_health).center(60, '-'))
                 else:
-                    total_attack_reward += prev_health - e_unit.health - e_unit.shield
+                    # Reward the health difference - assuming units do not regenerate health/shield
+                    health_delta = prev_health - (e_unit.health + e_unit.shield)
+                    assert health_delta >= 0, \
+                        "Enemy unit health delta is negative. " \
+                        "This unit {} gained health since last step and can thus not be counted as damage reward" \
+                            .format(e_id).center(60, '-')
+                    total_attack_reward += health_delta
 
                     if self.debug_rewards:
-                        logging.debug(
-                            "Reward enemy damage = {}".format(prev_health - e_unit.health - e_unit.shield).center(60,
-                                                                                                                  '-'))
+                        logging.debug("Reward enemy damage = {}".format(health_delta).center(60, '-'))
         return total_attack_reward
