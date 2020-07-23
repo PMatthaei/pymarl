@@ -40,7 +40,7 @@ case "$REPLY" in
   --user $(id -u):$(id -g) \
   -v $(pwd):/pymarl \
   -t pymarl:1.0 \
-  ${@:2}
+  ${@:1}
   break
   ;;
 2)
@@ -50,7 +50,7 @@ case "$REPLY" in
   --user $(id -u):$(id -g) \
   -v $(pwd):/pymarl \
   -t pymarl:1.0 \
-  ${@:2}
+  ${@:1}
   ;;
 
 *)
