@@ -46,7 +46,6 @@ case "$REPLY" in
 2)
   echo "Launching container named '${name}' on: all CPUs"
   docker run \
-  --cpus all \
   --name $name \
   --user $(id -u):$(id -g) \
   -v $(pwd):/pymarl \
