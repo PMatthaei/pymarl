@@ -34,7 +34,7 @@ case "$REPLY" in
 
 1)
   echo "Launching container named '${name}' on: all GPUs"
-  docker run \
+  sudo docker run \
   --gpus all \
   --name $name \
   --user $(id -u):$(id -g) \
@@ -45,7 +45,7 @@ case "$REPLY" in
   ;;
 2)
   echo "Launching container named '${name}' on: all CPUs"
-  docker run \
+  sudo docker run \
   --name $name \
   --user $(id -u):$(id -g) \
   -v $(pwd):/pymarl \
