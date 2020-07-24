@@ -227,16 +227,16 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
         # Assert correctness of local reward function -> local reward sum == global reward
         if self.reward_local:
-            local_reward_sum = np.sum(local_rewards)
-            diff = abs(reward - local_reward_sum)
+            local_reward_mean = np.mean(local_rewards)
+            diff = abs(reward - local_reward_mean)
 
-            np.testing.assert_almost_equal(reward, local_reward_sum, decimal=10,
-                                           err_msg="Global reward and local reward sum should be equal. Difference = {}"
+            np.testing.assert_almost_equal(reward, local_reward_mean, decimal=10,
+                                           err_msg="Global reward and local reward mean should be equal. Difference = {}"
                                            .format(diff).center(60, '-'))
 
             if self.debug_rewards:
                 logging.debug("Difference global vs. local = {}".format(diff).center(60, '-'))
-                logging.debug("Local reward sum = {}".format(local_reward_sum).center(60, '-'))
+                logging.debug("Local reward mean = {}".format(local_reward_mean).center(60, '-'))
 
         if self.debug_rewards:
             logging.debug("Global Reward = {}".format(reward).center(60, '-'))
@@ -395,7 +395,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
         else:
             reward = delta_enemy + delta_deaths - delta_ally
 
-        return reward
+        return reward / self.n_agents
 
     def get_agent_action_heuristic(self, a_id, action):
         unit = self.get_unit_by_id(a_id)
