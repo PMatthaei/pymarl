@@ -130,6 +130,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
         local_rewards = []
         reward = 0
+
         if self.reward_local:
             # Calculate total attack reward based on targets attacked in step t - before rewarding !
             self.local_attack_r_t = self.calculate_local_attack_reward(targets)
@@ -173,14 +174,9 @@ class CombinedRewardsSMAC(StarCraft2Env):
                         local_reward_win = self.reward_win / self.n_agents
                         if self.debug_rewards:
                             logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
-                        local_rewards = [x + local_reward_win for x in local_rewards]
+                        local_rewards = [r + local_reward_win for r in local_rewards]
                 else:
                     reward = 1
-                    if self.reward_local:
-                        local_reward_win = 1.0 / self.n_agents
-                        if self.debug_rewards:
-                            logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
-                        local_rewards = [local_reward_win] * self.n_agents
 
             elif game_end_code == -1 and not self.defeat_counted:
                 self.defeat_counted = True
@@ -193,13 +189,9 @@ class CombinedRewardsSMAC(StarCraft2Env):
                         local_reward_defeat = self.reward_defeat / self.n_agents
                         if self.debug_rewards:
                             logging.debug("Reward loss locally with {}".format(local_reward_defeat).center(60, '-'))
-                        local_rewards = [x + local_reward_defeat for x in local_rewards]
+                        local_rewards = [r + local_reward_defeat for r in local_rewards]
                 else:
                     reward = -1
-                    if self.reward_local:
-                        local_reward_defeat = -1.0 / self.n_agents
-                        logging.debug("Reward local loss with {}".format(local_reward_defeat).center(60, '-'))
-                        local_rewards = [local_reward_defeat] * self.n_agents
 
         elif self._episode_steps >= self.episode_limit:
             # Episode limit reached
@@ -213,7 +205,6 @@ class CombinedRewardsSMAC(StarCraft2Env):
             if self.reward_local:
                 logging.debug("Local rewards = {}".format(local_rewards).center(60, '-'))
                 logging.debug("Reward = {}".format(np.sum(local_rewards)).center(60, '-'))
-
             else:
                 logging.debug("Reward = {}".format(reward).center(60, '-'))
 
@@ -257,8 +248,8 @@ class CombinedRewardsSMAC(StarCraft2Env):
         r_mean_weighted = np.mean([(1.0 - w_j) * r_j for r_j, w_j in rs_ws])
         rs_weighted = [w_i * r_i + r_mean_weighted for r_i, w_i in rs_ws]
 
-        rs_sum = np.sum(rs)
-        rsw_sum = np.sum(rs_weighted)
+        rs_sum = np.sum(rs)  # reward sum before combination
+        rsw_sum = np.sum(rs_weighted)  # reward sum after combination weighting
         diff = abs(rs_sum - rsw_sum)
         # Ensure weighting/combining returns almost same global reward
         np.testing.assert_almost_equal(rs_sum, rsw_sum, decimal=10,
@@ -397,103 +388,6 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
         return reward / self.n_agents
 
-    def get_agent_action_heuristic(self, a_id, action):
-        unit = self.get_unit_by_id(a_id)
-        tag = unit.tag
-
-        target = self.heuristic_targets[a_id]
-        if unit.unit_type == self.medivac_id:
-            if (target is None or self.agents[target].health == 0 or
-                    self.agents[target].health == self.agents[target].health_max):
-                min_dist = math.hypot(self.max_distance_x, self.max_distance_y)
-                min_id = -1
-                for al_id, al_unit in self.agents.items():
-                    if al_unit.unit_type == self.medivac_id:
-                        continue
-                    if (al_unit.health != 0 and
-                            al_unit.health != al_unit.health_max):
-                        dist = self.distance(unit.pos.x, unit.pos.y,
-                                             al_unit.pos.x, al_unit.pos.y)
-                        if dist < min_dist:
-                            min_dist = dist
-                            min_id = al_id
-                self.heuristic_targets[a_id] = min_id
-                if min_id == -1:
-                    self.heuristic_targets[a_id] = None
-                    return None, 0
-            action_id = actions['heal']
-            target_tag = self.agents[self.heuristic_targets[a_id]].tag
-        else:
-            if target is None or self.enemies[target].health == 0:
-                min_dist = math.hypot(self.max_distance_x, self.max_distance_y)
-                min_id = -1
-                for e_id, e_unit in self.enemies.items():
-                    if (unit.unit_type == self.marauder_id and
-                            e_unit.unit_type == self.medivac_id):
-                        continue
-                    if e_unit.health > 0:
-                        dist = self.distance(unit.pos.x, unit.pos.y,
-                                             e_unit.pos.x, e_unit.pos.y)
-                        if dist < min_dist:
-                            min_dist = dist
-                            min_id = e_id
-                self.heuristic_targets[a_id] = min_id
-                if min_id == -1:
-                    self.heuristic_targets[a_id] = None
-                    return None, 0
-            action_id = actions['attack']
-            target_tag = self.enemies[self.heuristic_targets[a_id]].tag
-
-        action_num = self.heuristic_targets[a_id] + self.n_actions_no_attack
-
-        # Check if the action is available
-        if (self.heuristic_rest and
-                self.get_avail_agent_actions(a_id)[action_num] == 0):
-
-            # Move towards the target rather than attacking/healing
-            if unit.unit_type == self.medivac_id:
-                target_unit = self.agents[self.heuristic_targets[a_id]]
-            else:
-                target_unit = self.enemies[self.heuristic_targets[a_id]]
-
-            delta_x = target_unit.pos.x - unit.pos.x
-            delta_y = target_unit.pos.y - unit.pos.y
-
-            if abs(delta_x) > abs(delta_y):  # east or west
-                if delta_x > 0:  # east
-                    target_pos = sc_common.Point2D(
-                        x=unit.pos.x + self._move_amount, y=unit.pos.y)
-                    action_num = 4
-                else:  # west
-                    target_pos = sc_common.Point2D(
-                        x=unit.pos.x - self._move_amount, y=unit.pos.y)
-                    action_num = 5
-            else:  # north or south
-                if delta_y > 0:  # north
-                    target_pos = sc_common.Point2D(
-                        x=unit.pos.x, y=unit.pos.y + self._move_amount)
-                    action_num = 2
-                else:  # south
-                    target_pos = sc_common.Point2D(
-                        x=unit.pos.x, y=unit.pos.y - self._move_amount)
-                    action_num = 3
-
-            cmd = r_pb.ActionRawUnitCommand(
-                ability_id=actions['move'],
-                target_world_space_pos=target_pos,
-                unit_tags=[tag],
-                queue_command=False)
-        else:
-            # Attack/heal the target
-            cmd = r_pb.ActionRawUnitCommand(
-                ability_id=action_id,
-                target_unit_tag=target_tag,
-                unit_tags=[tag],
-                queue_command=False)
-
-        sc_action = sc_pb.Action(action_raw=r_pb.ActionRaw(unit_command=cmd))
-        return sc_action, action_num
-
     def get_agent_action(self, a_id, action):
         """Construct the action for agent a_id."""
         avail_actions = self.get_avail_agent_actions(a_id)
@@ -505,6 +399,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
         x = unit.pos.x
         y = unit.pos.y
 
+        # Save target attacked by agent
         target_id = None
 
         if action == 0:
