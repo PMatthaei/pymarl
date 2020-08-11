@@ -52,9 +52,10 @@ python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=2s3z
 ### Run via Docker
 To run experiments using the Docker container:
 ```shell
-bash run.sh $GPU python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=2s3z
+bash run.sh python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=2s3z
 ```
-`$GPU` should be replaced with the ID of your graphic card which can be retrieved by running `nvidi-smi` on linux.
+After execution you will be promted to choose if you would like to run the experiment on all GPUs or on the CPU.
+Ensure you have drivers and CUDA installed before choosing GPU experiment runs.
 
 #### Docker Version >= 19.03
 Since docker 19.03 there is built-in support for nvidia GPUs. Thus no additional installation of nvidia-docker is required.
