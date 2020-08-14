@@ -22,7 +22,7 @@ env_args:
   reward_sparse: False
   reward_win: 200
   reward_local: True
-  reward_local_weighted: True
+  combine_rewards: True
   local_reward_weight: 0.5
   replay_dir: ""
   replay_prefix: ""

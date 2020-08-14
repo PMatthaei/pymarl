@@ -41,7 +41,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
                  reward_scale=True,
                  reward_scale_rate=20,
                  reward_local=True,
-                 reward_local_weighted=True,
+                 combine_rewards=True,
                  local_reward_weight=.5,
                  debug_rewards=False,
                  replay_dir="", replay_prefix="",
@@ -72,7 +72,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
         self.debug_rewards = debug_rewards
         self.reward_local = reward_local
-        self.reward_local_weighted = reward_local_weighted
+        self.combine_rewards = combine_rewards
         # Every agent receives same combination weight
         self.local_reward_weights = [local_reward_weight] * self.n_agents
 
@@ -84,6 +84,9 @@ class CombinedRewardsSMAC(StarCraft2Env):
             logging.debug("New step = {}".format(self._episode_steps).center(60, '-'))
 
         """A single environment step. Returns reward, terminated, info."""
+        #
+        # Perform actions
+        #
         actions_int = [int(a) for a in actions]
 
         self.last_action = np.eye(self.n_actions)[np.array(actions_int)]
@@ -128,31 +131,26 @@ class CombinedRewardsSMAC(StarCraft2Env):
         # Update units
         game_end_code = self.update_units()
 
+        #
+        # Calculate battle rewards (non-sparse rewards calculated based on gamestate)
+        #
         local_rewards = []
-        reward = 0
+        global_reward = 0
 
         if self.reward_local:
-            # Calculate total attack reward based on targets attacked in step t - before rewarding !
-            self.local_attack_r_t = self.calculate_local_attack_reward(targets)
+            local_rewards = self.compute_local_rewards(actions_int, local_rewards, targets)
 
-            # Calculate for each agent its local reward
-            for a_id, action in enumerate(actions_int):
-                target_id = targets[a_id]
-                local_reward = self.local_reward(a_id, target_id)
-                local_rewards.append(local_reward)
-
-            # Weight reward importance
-            if self.reward_local_weighted:
-                local_rewards = self.combine_local_rewards(local_rewards)
-
-            # Calculate global reward to assert correctness later
-            reward = self.global_reward()
+            # Calculate global reward for later assertion
+            global_reward = self.compute_global_reward()
         else:
-            reward = self.global_reward()
+            global_reward = self.compute_global_reward()
 
         # After(!) rewarding every unit -> mark dead units for next steps
         self.mark_dead_units()
 
+        #
+        # Round win/defeat rewards
+        #
         terminated = False
 
         info = {"battle_won": False}
@@ -168,30 +166,30 @@ class CombinedRewardsSMAC(StarCraft2Env):
                 if not self.reward_sparse:
                     if self.debug_rewards:
                         logging.debug("Reward win with".format(self.reward_win).center(60, '-'))
-                    reward += self.reward_win
+                    global_reward += self.reward_win
                     if self.reward_local:
-                        # Every agent receives win reward
+                        # Every agent receives same win reward portion
                         local_reward_win = self.reward_win / self.n_agents
                         if self.debug_rewards:
                             logging.debug("Reward win locally with {}".format(local_reward_win).center(60, '-'))
                         local_rewards = [r + local_reward_win for r in local_rewards]
                 else:
-                    reward = 1
+                    global_reward = 1
 
             elif game_end_code == -1 and not self.defeat_counted:
                 self.defeat_counted = True
                 if not self.reward_sparse:
                     if self.debug_rewards:
                         logging.debug("Reward loss with {}".format(self.reward_defeat).center(60, '-'))
-                    reward += self.reward_defeat
+                    global_reward += self.reward_defeat
                     if self.reward_local:
-                        # Every agent receives win reward
+                        # Every agent receives same defeat reward portion
                         local_reward_defeat = self.reward_defeat / self.n_agents
                         if self.debug_rewards:
                             logging.debug("Reward loss locally with {}".format(local_reward_defeat).center(60, '-'))
                         local_rewards = [r + local_reward_defeat for r in local_rewards]
                 else:
-                    reward = -1
+                    global_reward = -1
 
         elif self._episode_steps >= self.episode_limit:
             # Episode limit reached
@@ -201,27 +199,33 @@ class CombinedRewardsSMAC(StarCraft2Env):
             self.battles_game += 1
             self.timeouts += 1
 
+        #
+        # Rewarding phase ended - all reward modifications must happen before this section
+        #
+        # normalize global reward by number of contributing agents
+        global_reward /= self.n_agents
+
         if self.debug_rewards or self.debug:
             if self.reward_local:
                 logging.debug("Local rewards = {}".format(local_rewards).center(60, '-'))
                 logging.debug("Reward = {}".format(np.sum(local_rewards)).center(60, '-'))
             else:
-                logging.debug("Reward = {}".format(reward).center(60, '-'))
+                logging.debug("Reward = {}".format(global_reward).center(60, '-'))
 
         if terminated:
             self._episode_count += 1
 
         if self.reward_scale:
-            reward /= self.max_reward / self.reward_scale_rate
+            global_reward /= self.max_reward / self.reward_scale_rate
             if self.reward_local:
                 local_rewards = [r / (self.max_reward / self.reward_scale_rate) for r in local_rewards]
 
         # Assert correctness of local reward function -> local reward sum == global reward
         if self.reward_local:
             local_reward_mean = np.mean(local_rewards)
-            diff = abs(reward - local_reward_mean)
+            diff = abs(global_reward - local_reward_mean)
 
-            np.testing.assert_almost_equal(reward, local_reward_mean, decimal=10,
+            np.testing.assert_almost_equal(global_reward, local_reward_mean, decimal=10,
                                            err_msg="Global reward and local reward mean should be equal. Difference = {}"
                                            .format(diff).center(60, '-'))
 
@@ -230,15 +234,28 @@ class CombinedRewardsSMAC(StarCraft2Env):
                 logging.debug("Local reward mean = {}".format(local_reward_mean).center(60, '-'))
 
         if self.debug_rewards:
-            logging.debug("Global Reward = {}".format(reward).center(60, '-'))
+            logging.debug("Global Reward = {}".format(global_reward).center(60, '-'))
 
         if self.reward_local:
             assert isinstance(local_rewards, list)  # Ensure reward is a list
             return local_rewards, terminated, info
 
-        reward_filled = [reward] * self.n_agents  # Serve global reward to all agents
+        reward_filled = [global_reward] * self.n_agents  # Serve global reward to all agents
         assert isinstance(reward_filled, list)  # Ensure reward is a list
         return reward_filled, terminated, info
+
+    def compute_local_rewards(self, actions_int, local_rewards, targets):
+        # Calculate total attack reward based on targets attacked in step t - before rewarding !
+        self.local_attack_r_t = self.calculate_local_attack_reward(targets)
+        # Calculate for each agent its local reward
+        for a_id, action in enumerate(actions_int):
+            target_id = targets[a_id]
+            local_reward = self.local_reward(a_id, target_id)
+            local_rewards.append(local_reward)
+        # Weight reward importance
+        if self.combine_rewards:
+            local_rewards = self.combine_local_rewards(local_rewards)
+        return local_rewards
 
     def combine_local_rewards(self, rs):
         ws = self.local_reward_weights
@@ -319,7 +336,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
         return reward
 
-    def global_reward(self):
+    def compute_global_reward(self):
         """Reward function when self.reward_spare==False.
         Returns accumulative hit/shield point damage dealt to the enemy
         + reward_death_value per enemy unit killed, and, in case
@@ -386,7 +403,9 @@ class CombinedRewardsSMAC(StarCraft2Env):
         else:
             reward = delta_enemy + delta_deaths - delta_ally
 
-        return reward / self.n_agents
+        # normalize by amount of agents contributing to reward
+
+        return reward
 
     def get_agent_action(self, a_id, action):
         """Construct the action for agent a_id."""
