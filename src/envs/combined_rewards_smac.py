@@ -73,10 +73,15 @@ class CombinedRewardsSMAC(StarCraft2Env):
         self.debug_rewards = debug_rewards
         self.reward_local = reward_local
         self.combine_rewards = combine_rewards
-        # Every agent receives same combination weight
+
+        # Every agent currently receives same combination weight
         self.local_reward_weights = [local_reward_weight] * self.n_agents
 
+        # Holds reward for an attacking agent in the current step
         self.local_attack_r_t = 0
+
+        # Attacked units aka targets in current step
+        self.targets_t = []
 
     def step(self, actions):
 
@@ -96,9 +101,6 @@ class CombinedRewardsSMAC(StarCraft2Env):
         if self.debug:
             logging.debug("Actions".center(60, "-"))
 
-        # Collect attacked units aka targets in this step
-        targets = []
-
         # Let AI/Agent decide on a action
         for a_id, action in enumerate(actions_int):
             if not self.heuristic_ai:
@@ -111,7 +113,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
             # Save action target for each agent
             if self.reward_local:
-                targets.append(target_id)
+                self.targets_t.append(target_id)
 
         # Send action request
         req_actions = sc_pb.RequestAction(actions=sc_actions)
@@ -138,15 +140,16 @@ class CombinedRewardsSMAC(StarCraft2Env):
         global_reward = 0
 
         if self.reward_local:
-            local_rewards = self.compute_local_rewards(actions_int, local_rewards, targets)
+            local_rewards = self.local_battle_rewards(actions_int)
 
-            # Calculate global reward for later assertion
-            global_reward = self.compute_global_reward()
-        else:
-            global_reward = self.compute_global_reward()
+        # Calculate global battle reward.
+        # NOTE: Local rewarding uses global reward for later assertion !
+        global_reward = self.global_battle_reward()
 
-        # After(!) rewarding every unit -> mark dead units for next steps
+        # After(!) rewarding every units battle -> mark dead units for upcoming steps/reward calculations
         self.mark_dead_units()
+        # Clear target tracking for next step
+        self.targets_t.clear()
 
         #
         # Round win/defeat rewards
@@ -202,6 +205,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
         #
         # Rewarding phase ended - all reward modifications must happen before this section
         #
+
         # normalize global reward by number of contributing agents
         global_reward /= self.n_agents
 
@@ -220,7 +224,9 @@ class CombinedRewardsSMAC(StarCraft2Env):
             if self.reward_local:
                 local_rewards = [r / (self.max_reward / self.reward_scale_rate) for r in local_rewards]
 
-        # Assert correctness of local reward function -> local reward sum == global reward
+        #
+        # Assert correctness of local reward function -> local reward mean == global reward
+        #
         if self.reward_local:
             local_reward_mean = np.mean(local_rewards)
             diff = abs(global_reward - local_reward_mean)
@@ -244,20 +250,36 @@ class CombinedRewardsSMAC(StarCraft2Env):
         assert isinstance(reward_filled, list)  # Ensure reward is a list
         return reward_filled, terminated, info
 
-    def compute_local_rewards(self, actions_int, local_rewards, targets):
+    def local_battle_rewards(self, actions_int):
+        """
+        Computes the local rewards which arise from battle. This includes damage, deaths, kills etc.
+        @param actions_int: Taken actions
+        @param local_rewards:
+        @param targets:
+        @return:
+        """
+        local_rewards = []
         # Calculate total attack reward based on targets attacked in step t - before rewarding !
-        self.local_attack_r_t = self.calculate_local_attack_reward(targets)
+        self.local_attack_r_t = self.calculate_local_attack_reward(self.targets_t)
+
         # Calculate for each agent its local reward
         for a_id, action in enumerate(actions_int):
-            target_id = targets[a_id]
-            local_reward = self.local_reward(a_id, target_id)
+            target_id = self.targets_t[a_id]
+            local_reward = self.local_battle_reward(a_id, target_id)
             local_rewards.append(local_reward)
-        # Weight reward importance
+
+        # Recombine rewards
         if self.combine_rewards:
             local_rewards = self.combine_local_rewards(local_rewards)
+
         return local_rewards
 
     def combine_local_rewards(self, rs):
+        """
+        Recombination function using the recombination weights from self.local_reward_weights.
+        @param rs: Local rewards to recombine
+        @return: Recombined rewards for all agents
+        """
         ws = self.local_reward_weights
         if self.debug:
             logging.debug("Local reward weights = {}".format(self.local_reward_weights).center(60, '-'))
@@ -274,7 +296,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
                                        .format(diff))
         return rs_weighted
 
-    def local_reward(self, a_id, target_id):
+    def local_battle_reward(self, a_id, target_id):
         """
         Reward function which returns the local reward of a single agent with a given id.
 
@@ -284,6 +306,9 @@ class CombinedRewardsSMAC(StarCraft2Env):
         The agent receives the following negative rewards:
             - his health delta compared to previous step -> received damage
             - death penalty
+        @param a_id: ID of the agent which is rewarded
+        @param target_id: ID of the target of agent with ID a_id. None if no-one was attacked
+        @return: Local battle reward for agent with ID a_id
         """
         if self.reward_sparse:
             return 0
@@ -336,12 +361,14 @@ class CombinedRewardsSMAC(StarCraft2Env):
 
         return reward
 
-    def compute_global_reward(self):
-        """Reward function when self.reward_spare==False.
+    def global_battle_reward(self):
+        """
+        Reward function when self.reward_spare==False.
         Returns accumulative hit/shield point damage dealt to the enemy
         + reward_death_value per enemy unit killed, and, in case
         self.reward_only_positive == False, - (damage dealt to ally units
         + reward_death_value per ally unit killed) * self.reward_negative_scale
+        @return: Global battle reward for all agents
         """
         if self.reward_sparse:
             return 0
@@ -364,6 +391,7 @@ class CombinedRewardsSMAC(StarCraft2Env):
                 if al_unit.health == 0:
                     # just died
                     if not self.reward_only_positive:
+                        # dying is "neg_scale"-times worse/better than killing (i.e. half as bad)
                         scaled_death_reward = self.reward_death_value * neg_scale
                         delta_deaths -= scaled_death_reward
                         if self.debug_rewards:
@@ -403,12 +431,15 @@ class CombinedRewardsSMAC(StarCraft2Env):
         else:
             reward = delta_enemy + delta_deaths - delta_ally
 
-        # normalize by amount of agents contributing to reward
-
         return reward
 
     def get_agent_action(self, a_id, action):
-        """Construct the action for agent a_id."""
+        """
+        Construct the action for agent a_id.
+        @param a_id: Agents ID
+        @param action: Action taken by a_id (int)
+        @return: StarCraft action, target_id
+        """
         avail_actions = self.get_avail_agent_actions(a_id)
         assert avail_actions[action] == 1, \
             "Agent {} cannot perform action {}".format(a_id, action)
@@ -506,6 +537,10 @@ class CombinedRewardsSMAC(StarCraft2Env):
         return sc_action, target_id
 
     def mark_dead_units(self):
+        """
+        Mark all units which have died in this step as dead
+        @return: None
+        """
         # mark allies
         for al_id, al_unit in self.agents.items():
             if not self.death_tracker_ally[al_id] and al_unit.health == 0:
@@ -516,7 +551,12 @@ class CombinedRewardsSMAC(StarCraft2Env):
                 self.death_tracker_enemy[e_id] = 1
 
     def calculate_local_attack_reward(self, a_id_targets):
-        # Retrieve total dmg dealt by the team of agent
+        """
+        Calculate the reward an agents receives when attacking another unit (participating in a kill).
+        See computation steps below.
+        @param a_id_targets:
+        @return:
+        """
         total_attack_reward = self.get_total_attack_dmg()
         # Calculate amount of attacking agents
         attackers = sum(x is not None for x in a_id_targets)
@@ -527,6 +567,10 @@ class CombinedRewardsSMAC(StarCraft2Env):
         return total_attack_reward / (1.0 if (attackers == 0) else float(attackers))
 
     def get_total_attack_dmg(self):
+        """
+        Sum up all damage dealt to enemies and all kill rewards.
+        @return:
+        """
         total_attack_reward = 0
         for e_id, e_unit in self.enemies.items():
             if not self.death_tracker_enemy[e_id]:
