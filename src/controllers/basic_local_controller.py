@@ -4,10 +4,9 @@ import torch as th
 
 
 # This multi-agent controller shares parameters between agents
-class BasicMAC:
+class BasicLocalMAC:
     def __init__(self, scheme, groups, args):
         self.n_agents = args.n_agents
-        self.groups = groups
         self.args = args
         input_shape = self._get_input_shape(scheme)
         self._build_agents(input_shape)
@@ -21,23 +20,33 @@ class BasicMAC:
         # Only select actions for the selected batch elements in bs
         avail_actions = ep_batch["avail_actions"][:, t_ep]
         agent_outputs = self.forward(ep_batch, t_ep, test_mode=test_mode)
-        chosen_actions = self.action_selector.select_action(agent_outputs[bs], avail_actions[bs], t_env, test_mode=test_mode)
+        chosen_actions = self.action_selector.select_action(agent_outputs[bs], avail_actions[bs], t_env,
+                                                            test_mode=test_mode)
         return chosen_actions
 
     def forward(self, ep_batch, t, test_mode=False):
         agent_inputs = self._build_inputs(ep_batch, t)
-        avail_actions = ep_batch["avail_actions"][:, t]
-        agent_outs, self.hidden_states = self.agent(agent_inputs, self.hidden_states)
+        # TODO: if batch size reached not working!
+        all_agent_outs = []
+        for i in range(self.n_agents):
+            agent_in = agent_inputs[i].unsqueeze(0)
+            agent_hidden = self.hidden_states[0][i]
+            agent_out, agent_hidden = self.agent(agent_in, agent_hidden)
+            self.hidden_states[0][i] = agent_hidden
+            all_agent_outs.append(agent_out)
+
+        all_agent_outs = th.cat(all_agent_outs, dim=1)
 
         # Softmax the agent outputs if they're policy logits
         if self.agent_output_type == "pi_logits":
-            reshaped_avail_actions = None
+            avail_actions = ep_batch["avail_actions"][:, t]
+
             if getattr(self.args, "mask_before_softmax", True):
                 # Make the logits for unavailable actions very negative to minimise their affect on the softmax
                 reshaped_avail_actions = avail_actions.reshape(ep_batch.batch_size * self.n_agents, -1)
-                agent_outs[reshaped_avail_actions == 0] = -1e10
+                all_agent_outs[reshaped_avail_actions == 0] = -1e10
 
-            agent_outs = th.nn.functional.softmax(agent_outs, dim=-1)
+            agent_outs = th.nn.functional.softmax(all_agent_outs, dim=-1)
             if not test_mode:
                 # Epsilon floor
                 epsilon_action_num = agent_outs.size(-1)
@@ -46,14 +55,13 @@ class BasicMAC:
                     epsilon_action_num = reshaped_avail_actions.sum(dim=1, keepdim=True).float()
 
                 agent_outs = ((1 - self.action_selector.epsilon) * agent_outs
-                               + th.ones_like(agent_outs) * self.action_selector.epsilon/epsilon_action_num)
+                              + th.ones_like(agent_outs) * self.action_selector.epsilon / epsilon_action_num)
 
                 if getattr(self.args, "mask_before_softmax", True):
                     # Zero out the unavailable actions
                     agent_outs[reshaped_avail_actions == 0] = 0.0
-            assert reshaped_avail_actions is not None
 
-        view = agent_outs.view(ep_batch.batch_size, self.n_agents, -1)
+        view = all_agent_outs.view(ep_batch.batch_size, self.n_agents, -1)
         return view
 
     def init_hidden(self, batch_size):
@@ -78,28 +86,22 @@ class BasicMAC:
         self.agent = agent_REGISTRY[self.args.agent](input_shape, self.args)
 
     def _build_inputs(self, batch, t):
-        # TODO: agents are not homogenous?
         # Assumes homogenous agents with flat observations.
         # Other MACs might want to e.g. delegate building inputs to each agent
         bs = batch.batch_size
-        inputs = [batch["obs"][:, t]]
-        # Add last action to inputs if needed
+        inputs = []
+        inputs.append(batch["obs"][:, t])  # b1av
         if self.args.obs_last_action:
-            # at t=0 is all zeros = no-op action
             if t == 0:
                 inputs.append(th.zeros_like(batch["actions_onehot"][:, t]))
-            # else add actions one-hot encoded from previous step (t-1) as last actions
             else:
-                inputs.append(batch["actions_onehot"][:, t-1])
-        # If actions should include agent id -> add row of identity matrix corresponding to agent
+                inputs.append(batch["actions_onehot"][:, t - 1])
         if self.args.obs_agent_id:
             inputs.append(th.eye(self.n_agents, device=batch.device).unsqueeze(0).expand(bs, -1, -1))
 
-        # Reshape inputs
-        inputs = th.cat([x.reshape(bs*self.n_agents, -1) for x in inputs], dim=1)
+        inputs = th.cat([x.reshape(bs * self.n_agents, -1) for x in inputs], dim=1)
         return inputs
 
-    # Input shape defines input amount of agent network
     def _get_input_shape(self, scheme):
         input_shape = scheme["obs"]["vshape"]
         if self.args.obs_last_action:

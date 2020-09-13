@@ -1,5 +1,5 @@
 ```diff
-- Dec 4th - Updated to use SMAC V1. 
+- This is a fork of https://github.com/oxwhirl/pymarl !
 ```
 
 # Python MARL framework
@@ -32,30 +32,85 @@ The requirements.txt file can be used to install the necessary packages into a v
 
 ## Run an experiment 
 
+Before running experiments read every chapter if you plan to run experiments with saved models and/or replay output carefully.
+
+### Configuration
+Configuration files act as defaults for an algorithm or environment. 
+
+Configuration files are all located in `src/config`.
+- `--config` refers to the [algorithm config files](https://github.com/PMatthaei/pymarl/tree/master/src/config/algs) in `src/config/algs`
+- `--env-config` refers to the [environment config files](https://github.com/PMatthaei/pymarl/tree/master/src/config/envs) in `src/config/envs`
+
+The previous config files used for the SMAC Beta have the suffix `_beta`.
+
+### Run via Commandline
+Make sure you are in directory ``pymarl`` and have a configured ``python3`` interpreter.
 ```shell
 python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=2s3z
 ```
 
-The config files act as defaults for an algorithm or environment. 
-
-They are all located in `src/config`.
-`--config` refers to the config files in `src/config/algs`
-`--env-config` refers to the config files in `src/config/envs`
-
+### Run via Docker
 To run experiments using the Docker container:
 ```shell
-bash run.sh $GPU python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=2s3z
+bash run.sh python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=2s3z
+```
+After execution you will be promted to choose if you would like to run the experiment on all GPUs or on the CPU.
+Ensure you have drivers and CUDA installed before choosing GPU experiment runs.
+
+#### Docker Version >= 19.03
+Since docker 19.03 there is built-in support for nvidia GPUs. Thus no additional installation of nvidia-docker is required.
+For more information see: https://github.com/NVIDIA/nvidia-docker.
+
+Instead you can use `docker run --gpus all ...` to run your image on _every_ graphic card installed and supported.
+Thus no GPU IDs have to be passed as argument if you want to train on all connected graphic cards. 
+If necessary GPU IDs can be retrieved via `nvidi-smi` on linux.
+
+##### Examples (Docker >=19.03)**
+
+###### Task
+Run COMA in 15m environment on all GPUs (see argument behind run.sh) and save model (at default timestep rate and default directory).
+
+**Ubuntu 18.04:** 
+
+```shell
+bash run.sh all python3 src/main.py --config=coma --env-config=sc2 with env_args.map_name=15m save_model=True
+```
+Saving a replay file:
+
+```shell
+bash run.sh all python3 src/main.py --config=coma --env-config=sc2 with env_args.map_name=15m save_replay=True runner=episode
+```
+ 
+**Windows 10** (not recommended/supported):
+
+**Note:** Since the current run.sh is configured for ubuntu the following line should achieve the same as the above.
+```
+docker run --gpus all -v "$(pwd):/pymarl" -t pymarl:1.0 python3 src/main.py --config=qmix --env-config=sc2 with env_args.map_name=15m save_model=True save_replay=True
 ```
 
-All results will be stored in the `Results` folder.
+### Run via PyCharm/Virtual environment
 
-The previous config files used for the SMAC Beta have the suffix `_beta`.
+1. Add `SC2PATH` to your environment variables under `Edit Configurations` where the value is pointing to the directory you have installed SC2 binaries.
+2. Create virtual environment (conda etc)
+3. Add dependencies
+4. Run main.py with example parameters: `--config=qmix --env-config=sc2 with env_args.map_name=2s3z`
+### Results
+All results will be stored in the `Results` folder under ``results/sacred``.
 
 ## Saving and loading learnt models
 
 ### Saving models
 
-You can save the learnt models to disk by setting `save_model = True`, which is set to `False` by default. The frequency of saving models can be adjusted using `save_model_interval` configuration. Models will be saved in the result directory, under the folder called *models*. The directory corresponding each run will contain models saved throughout the experiment, each within a folder corresponding to the number of timesteps passed since starting the learning process.
+You can save the learnt models to disk by setting `save_model=True`, which is set to `False` by default. 
+The frequency of saving models can be adjusted using `save_model_interval` configuration. 
+Models will be saved in the result directory, under the folder called *models*. 
+The directory corresponding each run will contain models saved throughout the experiment, each within a folder corresponding to the number of timesteps passed since starting the learning process.
+
+**Example for COMA (Docker >=19.03):**
+
+```shell
+bash run.sh ... checkpoint_path=results/models/<your model folder> save_model=True
+```
 
 ### Loading models
 
@@ -63,19 +118,53 @@ Learnt models can be loaded using the `checkpoint_path` parameter, after which t
 
 ## Watching StarCraft II replays
 
-`save_replay` option allows saving replays of models which are loaded using `checkpoint_path`. Once the model is successfully loaded, `test_nepisode` number of episodes are run on the test mode and a .SC2Replay file is saved in the Replay directory of StarCraft II. Please make sure to use the episode runner if you wish to save a replay, i.e., `runner=episode`. The name of the saved replay file starts with the given `env_args.save_replay_prefix` (map_name if empty), followed by the current timestamp. 
+### Model collections
+
+The following repository is holding a lot of models already obtained: https://github.com/PMatthaei/pymarl-results
+
+In order to use these results, clone the repo and copy the master folder into the results folder before mounting it into a docker container.
+
+```shell
+bash run.sh python3 src/main.py --config=coma --env-config=sc2 with env_args.map_name=3m checkpoint_path=/home/gaming-ubuntu/Projects/pymarlresults/3m_coma/model save_replay=True runner=episode batch_size=1 batch_size_run=1
+```
+
+### Generating a replay file
+`save_replay` option allows saving replays of models which are loaded using `checkpoint_path`. 
+The checkpoint argument is mandatory to tell StarCraft which model to use. 
+Reference a model from the folder *models* (see above). 
+Once the model is successfully loaded, `test_nepisode` number of episodes are run on the test mode and a .SC2Replay file is saved in the Replay directory of StarCraft II. 
+Please make sure to **use the episode runner if you wish to save a replay**, i.e., `runner=episode`. 
+The name of the saved replay file starts with the given `env_args.save_replay_prefix` (map_name if empty), followed by the current timestamp. 
+
+### Watching a replay
+
+Follow the setup guide for PySC2: https://github.com/deepmind/pysc2
+1. Download SC2 binaries
+2. Unpack to a directory of your choice
+3. Set SC2PATH environment variable to that directory
+4. Download SMAC Maps
+5. Unpack and copy content to /Maps
+
+**Note:** Replays within the Starcraft Engine cannot be watched using the Linux version of StarCraft II. Please use either the Mac or Windows version of the StarCraft II client. PySC2 is only serving a alternate Interface which does not render Starcraft Assets.
+
+See: https://github.com/oxwhirl/smac/issues/22
 
 The saved replays can be watched by double-clicking on them or using the following command:
 
 ```shell
-python -m pysc2.bin.play --norender --rgb_minimap_size 0 --replay NAME.SC2Replay
+python -m pysc2.bin.play --norender --rgb_minimap_size 0 --replay <NAME>.SC2Replay
 ```
 
-**Note:** Replays cannot be watched using the Linux version of StarCraft II. Please use either the Mac or Windows version of the StarCraft II client.
+Run in docker (>=19.03): 
+
+**Note:** This will show nothing. Removing `--norender` results in an error
+```shell
+bash run.sh python3 -m pysc2.bin.play --norender --rgb_minimap_size 0 --replay <NAME>.SC2Replay
+```
 
 ## Documentation/Support
 
-Documentation is a little sparse at the moment (but will improve!). Please raise an issue in this repo, or email [Tabish](mailto:tabish.rashid@cs.ox.ac.uk)
+This is an adapted documentation for this repos specific needs. For the original documentation please visit this forks base repository.
 
 ## Citing PyMARL 
 

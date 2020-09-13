@@ -9,13 +9,16 @@ class EpisodeRunner:
     def __init__(self, args, logger):
         self.args = args
         self.logger = logger
+        # Batch size = how many instances are running -> episode runner is forced to run just one
         self.batch_size = self.args.batch_size_run
         assert self.batch_size == 1
 
         self.env = env_REGISTRY[self.args.env](**self.args.env_args)
         self.episode_limit = self.env.episode_limit
+        # Total environment steps taken (over all env restarts)
         self.t = 0
 
+        # Total environment step taken in current instance of environment
         self.t_env = 0
 
         self.train_returns = []
@@ -53,32 +56,48 @@ class EpisodeRunner:
         self.mac.init_hidden(batch_size=self.batch_size)
 
         while not terminated:
-
+            # Build sample data for time step t (existing before environment step)
             pre_transition_data = {
                 "state": [self.env.get_state()],
                 "avail_actions": [self.env.get_avail_actions()],
                 "obs": [self.env.get_obs()]
             }
-
+            # Insert pre transition data for current time step t
             self.batch.update(pre_transition_data, ts=self.t)
 
             # Pass the entire batch of experiences up till now to the agents
-            # Receive the actions for each agent at this timestep in a batch of size 1
+            # Receive the chosen actions for each agent at this time step in a batch of size 1
             actions = self.mac.select_actions(self.batch, t_ep=self.t, t_env=self.t_env, test_mode=test_mode)
 
-            reward, terminated, env_info = self.env.step(actions[0])
-            episode_return += reward
+            # Perform environment step with chosen actions
+            rewards, terminated, env_info = self.env.step(actions[0])
 
+            if not self.env.reward_local:
+                # Assert if global reward is returning the same reward for each agent
+                assert np.unique(rewards).size == 1, "Global reward array inconsistent."
+
+            if self.env.reward_local:
+                # Sum up local rewards into global reward and add to episode return
+                episode_return += np.sum(rewards)
+            else:
+                # If global rewards take first -> each agent received global reward -> irrelevant to choose index
+                episode_return += rewards[0]
+
+            # Build sample data for time step t (data resulting from environment step)
+            reward_data = rewards if self.env.reward_local else [(rewards[0],)]
             post_transition_data = {
                 "actions": actions,
-                "reward": [(reward,)],
+                "reward": reward_data,
                 "terminated": [(terminated != env_info.get("episode_limit", False),)],
             }
 
+            # Insert post transition data for current time step t
             self.batch.update(post_transition_data, ts=self.t)
 
+            # Env step finished -> increase
             self.t += 1
 
+        # Perform after environment terminated -> last episode
         last_data = {
             "state": [self.env.get_state()],
             "avail_actions": [self.env.get_avail_actions()],
@@ -90,6 +109,9 @@ class EpisodeRunner:
         actions = self.mac.select_actions(self.batch, t_ep=self.t, t_env=self.t_env, test_mode=test_mode)
         self.batch.update({"actions": actions}, ts=self.t)
 
+        #
+        # Logging of train/test stats
+        #
         cur_stats = self.test_stats if test_mode else self.train_stats
         cur_returns = self.test_returns if test_mode else self.train_returns
         log_prefix = "test_" if test_mode else ""

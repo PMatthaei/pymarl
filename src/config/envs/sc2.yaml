@@ -21,6 +21,9 @@ env_args:
   reward_scale_rate: 20
   reward_sparse: False
   reward_win: 200
+  reward_local: True
+  combine_rewards: True
+  local_reward_weight: 0.5
   replay_dir: ""
   replay_prefix: ""
   state_last_action: True
