@@ -125,6 +125,7 @@ class ParallelRunner:
                 "reward": [],
                 "terminated": []
             }
+
             # Data for the next step we will insert in order to select an action
             pre_transition_data = {
                 "state": [],

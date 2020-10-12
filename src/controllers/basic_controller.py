@@ -18,7 +18,7 @@ class BasicMAC:
         self.hidden_states = None
 
     def select_actions(self, ep_batch, t_ep, t_env, bs=slice(None), test_mode=False):
-        # Only select actions for the selected batch elements in bs
+        # Only select actions for the selected batch elements in bs -> feed to selector later
         avail_actions = ep_batch["avail_actions"][:, t_ep]
         agent_outputs = self.forward(ep_batch, t_ep, test_mode=test_mode)
         chosen_actions = self.action_selector.select_action(agent_outputs[bs], avail_actions[bs], t_env, test_mode=test_mode)
@@ -27,6 +27,7 @@ class BasicMAC:
     def forward(self, ep_batch, t, test_mode=False):
         agent_inputs = self._build_inputs(ep_batch, t)
         avail_actions = ep_batch["avail_actions"][:, t]
+        # Perform forward of agents with inputs of all agents and update hidden state for next forward pass
         agent_outs, self.hidden_states = self.agent(agent_inputs, self.hidden_states)
 
         # Softmax the agent outputs if they're policy logits
@@ -81,29 +82,33 @@ class BasicMAC:
         # TODO: agents are not homogenous?
         # Assumes homogenous agents with flat observations.
         # Other MACs might want to e.g. delegate building inputs to each agent
-        bs = batch.batch_size
+        batch_size = batch.batch_size
         inputs = [batch["obs"][:, t]]
         # Add last action to inputs if needed
         if self.args.obs_last_action:
-            # at t=0 is all zeros = no-op action
+            # At t=0 is all zeros = no-op action
             if t == 0:
                 inputs.append(th.zeros_like(batch["actions_onehot"][:, t]))
             # else add actions one-hot encoded from previous step (t-1) as last actions
             else:
                 inputs.append(batch["actions_onehot"][:, t-1])
-        # If actions should include agent id -> add row of identity matrix corresponding to agent
+        # If agent ids should be included in input
+        # Add row of identity matrix corresponding to one-hot encoded agent to observation(and repeat for batch size)
         if self.args.obs_agent_id:
-            inputs.append(th.eye(self.n_agents, device=batch.device).unsqueeze(0).expand(bs, -1, -1))
+            inputs.append(th.eye(self.n_agents, device=batch.device).unsqueeze(0).expand(batch_size, -1, -1))
 
         # Reshape inputs
-        inputs = th.cat([x.reshape(bs*self.n_agents, -1) for x in inputs], dim=1)
+        inputs = th.cat([x.reshape(batch_size*self.n_agents, -1) for x in inputs], dim=1)
         return inputs
 
     # Input shape defines input amount of agent network
     def _get_input_shape(self, scheme):
+        # Default input shape is defined in vshape of obs
         input_shape = scheme["obs"]["vshape"]
+        # Add the shape of a one-hot encoded action if needed
         if self.args.obs_last_action:
             input_shape += scheme["actions_onehot"]["vshape"][0]
+        # Add amount of agents to shape if their ids should be included
         if self.args.obs_agent_id:
             input_shape += self.n_agents
 
