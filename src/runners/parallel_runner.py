@@ -139,7 +139,7 @@ class ParallelRunner:
                     # Remaining data for this current timestep
 
                     post_transition_data["reward"].append((data["reward"],))
-                    if self.args.use_local_rewards:
+                    if self.args.env_args["reward_local"]:
                         episode_returns[idx] += np.sum(data["reward"])
                     else:
                         episode_returns[idx] += data["reward"][0]
